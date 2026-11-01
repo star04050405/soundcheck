@@ -40,6 +40,14 @@ h1 .dot{color:#007AFF}
 @keyframes floatup{0%{opacity:0;transform:translateY(14px)}12%{opacity:.95}80%{opacity:.5}100%{opacity:0;transform:translateY(-14px)}}
 .tip{font-size:13.5px;color:#86868B;margin-top:22px;padding:0 6px;line-height:1.7;text-align:center}
 .tip b{color:#3A3A3C;font-weight:600}
+/* 关闭/继续按钮 */
+.stopbtn{margin-top:20px;width:100%;padding:16px 18px;border:0;border-radius:16px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.06);border:1.5px solid rgba(0,0,0,.04);font-family:inherit;font-size:17px;color:#1C1C1E;display:none;align-items:center;justify-content:center;gap:10px;cursor:pointer}
+.eq{display:flex;width:14px;height:14px;align-items:flex-end;gap:2px}
+.stopbtn.off .eq{display:none}
+.eq i{width:3px;background:#007AFF;border-radius:1px;animation:eq .9s ease-in-out infinite}
+.eq i:nth-child(2){animation-delay:.22s}.eq i:nth-child(3){animation-delay:.44s}
+@keyframes eq{0%,100%{height:3px}50%{height:12px}}
+.stopbtn.go{color:#007AFF;font-weight:600}
 footer{margin-top:30px;text-align:center;font-size:11.5px;color:#AEAEB2;line-height:1.8}
 /* 启动遮罩（仅当浏览器拦截自动播放时出现） */
 .gate{position:fixed;inset:0;background:rgba(245,245,247,.96);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:9;transition:opacity .5s}
@@ -74,6 +82,11 @@ footer{margin-top:30px;text-align:center;font-size:11.5px;color:#AEAEB2;line-hei
     <div class="notes" id="notesR"></div>
   </button>
 </div>
+
+<button class="stopbtn" id="btnStop" ontouchstart="">
+  <span class="eq"><i></i><i></i><i></i></span>
+  <span id="stopTxt">关闭声音</span>
+</button>
 
 <div class="tip">戴上耳机，点一下 <b>播放</b>——左耳会先响起一首 <b>月色</b>；再点右侧卡片，<b>日光</b> 换到右耳。声音只该出现在正在播放的那一侧耳朵。</div>
 
@@ -213,7 +226,33 @@ function scheduleStep(side){
 function tick(){
   if(!curSide||!AC||AC.state!=="running")return;
   var S=SONGS[curSide],sc=sched[curSide];
+  if(sc.next<AC.currentTime)sc.next=AC.currentTime+.05; /* 后台归来防追帧爆音 */
   while(sc.next<AC.currentTime+.4){scheduleStep(curSide)}
+}
+
+/* 关闭声音：总闸优雅淡出 */
+var userStopped=false,lastSide="L",susTimer=null;
+function stopAudio(){
+  if(!AC||!curSide)return;
+  var t=AC.currentTime;
+  var mg=master.gain;
+  mg.cancelScheduledValues(t);mg.setValueAtTime(mg.value,t);
+  mg.linearRampToValueAtTime(0,t+.8);
+  curSide=null;userStopped=true;ui();
+  if(schedTimer){clearInterval(schedTimer);schedTimer=null}
+  if(susTimer)clearTimeout(susTimer);
+  susTimer=setTimeout(function(){susTimer=null;if(!curSide&&AC)AC.suspend()},1300);
+}
+function startSched(){
+  if(!schedTimer)schedTimer=setInterval(tick,110);
+}
+function resumeAudio(side){
+  ensureCtx();
+  if(AC.state==="suspended")AC.resume();
+  var t=AC.currentTime;
+  var mg=master.gain;
+  if(mg.value<0.1){mg.cancelScheduledValues(t);mg.setValueAtTime(mg.value,t);mg.linearRampToValueAtTime(.62,t+.6)}
+  playSide(side);startSched();
 }
 
 /* 切换：交叉淡入淡出 + 起停调度 */
@@ -221,6 +260,7 @@ function playSide(side){
   ensureCtx();
   if(AC.state==="suspended")AC.resume();
   if(curSide===side)return;
+  userStopped=false;
   var other=side==="L"?"R":"L";
   var t=AC.currentTime;
   if(curSide){ /* 旧侧优雅淡出，尾音自然消散 */
@@ -231,15 +271,18 @@ function playSide(side){
   var ng=buses[side].mg.gain;
   ng.cancelScheduledValues(t);ng.setValueAtTime(ng.value,t);
   ng.linearRampToValueAtTime(1,t+.9);
-  sched[side].next=Math.max(sched[side].next,AC.currentTime+.08);
-  if(!sched[side].step)sched[side].next=AC.currentTime+.1;
-  curSide=side;ui();
+  if(sched[side].next<AC.currentTime-.1)sched[side].next=AC.currentTime+.1; /* 停久后续播防追帧 */
+  lastSide=side;curSide=side;ui();
 }
 function ui(){
   document.getElementById("sideL").classList.toggle("on",curSide==="L");
   document.getElementById("sideR").classList.toggle("on",curSide==="R");
   document.getElementById("modeL").textContent=curSide==="L"?"左声道 · 正在播放":"左声道 · 点击播放";
   document.getElementById("modeR").textContent=curSide==="R"?"右声道 · 正在播放":"右声道 · 点击播放";
+  var b=document.getElementById("btnStop");
+  b.style.display="flex";
+  if(curSide){b.classList.remove("go","off");document.getElementById("stopTxt").textContent="关闭声音"}
+  else{b.classList.add("go","off");document.getElementById("stopTxt").textContent="继续播放 · "+(SONGS[lastSide].name+" "+SONGS[lastSide].key)}
 }
 
 /* 音符雨显示 */
@@ -273,24 +316,28 @@ function tryResume(){
     AC.resume().then(function(){
       if(AC.state==="running"){
         document.getElementById("gate").classList.add("off");
-        if(!curSide)playSide("L");
-        if(!schedTimer)schedTimer=setInterval(tick,110);
+        if(!curSide&&!userStopped)playSide("L");
+        startSched();
       }
     }).catch(function(){});
   }
 }
 window.addEventListener("load",boot);
-/* 首个手势兜底（有些浏览器手势才算数） */
+/* 首个手势兜底（有些浏览器手势才算数）——用户关掉后不复活 */
 ["touchstart","mousedown","keydown"].forEach(function(ev){
   window.addEventListener(ev,function(){if(booted)tryResume()},{passive:true});
 });
 document.getElementById("gateBtn").addEventListener("click",function(){
   tryResume();
-  if(AC&&AC.state==="running"){document.getElementById("gate").classList.add("off");if(!curSide)playSide("L")}
+  if(AC&&AC.state==="running"){document.getElementById("gate").classList.add("off");if(!curSide)playSide("L");startSched()}
 });
-/* 卡片切换 */
-document.getElementById("sideL").addEventListener("click",function(){tryResume();playSide("L");if(!schedTimer)schedTimer=setInterval(tick,110)});
-document.getElementById("sideR").addEventListener("click",function(){tryResume();playSide("R");if(!schedTimer)schedTimer=setInterval(tick,110)});
+/* 关闭/继续 */
+document.getElementById("btnStop").addEventListener("click",function(){
+  if(curSide)stopAudio();else resumeAudio(lastSide||"L");
+});
+/* 卡片切换（关闭态点卡=直接播该侧） */
+document.getElementById("sideL").addEventListener("click",function(){if(curSide==="L")return;tryResume();if(userStopped||!curSide)resumeAudio("L");else{playSide("L");startSched()}});
+document.getElementById("sideR").addEventListener("click",function(){if(curSide==="R")return;tryResume();if(userStopped||!curSide)resumeAudio("R");else{playSide("R");startSched()}});
 /* 从后台切回前台时续播 */
 document.addEventListener("visibilitychange",function(){if(!document.hidden)tryResume()});
 </script>
