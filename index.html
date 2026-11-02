@@ -338,8 +338,36 @@ document.getElementById("btnStop").addEventListener("click",function(){
 /* 卡片切换（关闭态点卡=直接播该侧） */
 document.getElementById("sideL").addEventListener("click",function(){if(curSide==="L")return;tryResume();if(userStopped||!curSide)resumeAudio("L");else{playSide("L");startSched()}});
 document.getElementById("sideR").addEventListener("click",function(){if(curSide==="R")return;tryResume();if(userStopped||!curSide)resumeAudio("R");else{playSide("R");startSched()}});
-/* 从后台切回前台时续播 */
-document.addEventListener("visibilitychange",function(){if(!document.hidden)tryResume()});
+/* 从后台切回前台时续播；切走时立即安静（不留背景音乐） */
+document.addEventListener("visibilitychange",function(){
+  if(document.hidden){hiddenQuiet()}
+  else{comeBack()}
+});
+var hiddenT=null;
+function hiddenQuiet(){
+  if(!AC)return;
+  var t=AC.currentTime;
+  var mg=master.gain;
+  mg.cancelScheduledValues(t);mg.setValueAtTime(mg.value,t);
+  mg.linearRampToValueAtTime(0,t+.35);
+  if(schedTimer){clearInterval(schedTimer);schedTimer=null}
+  if(hiddenT)clearTimeout(hiddenT);
+  hiddenT=setTimeout(function(){hiddenT=null;if(document.hidden&&AC)AC.suspend()},900);
+}
+function comeBack(){
+  if(hiddenT){clearTimeout(hiddenT);hiddenT=null}
+  if(!AC||!curSide)return; /* 用户自己关了就保持安静 */
+  var go=function(){
+    var t=AC.currentTime;
+    var mg=master.gain;
+    if(mg.value<0.1){mg.cancelScheduledValues(t);mg.setValueAtTime(mg.value,t);mg.linearRampToValueAtTime(.62,t+.5)}
+    if(curSide&&sched[curSide].next<AC.currentTime-.1)sched[curSide].next=AC.currentTime+.1;
+    startSched();
+  };
+  if(AC.state!=="running"){AC.resume().then(function(){if(AC.state==="running"&&curSide)go()}).catch(function(){})}
+  else go();
+}
+window.addEventListener("pagehide",function(){if(AC&&AC.state==="running")AC.suspend()});
 </script>
 </body>
 </html>
